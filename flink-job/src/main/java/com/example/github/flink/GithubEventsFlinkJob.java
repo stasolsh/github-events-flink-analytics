@@ -1,6 +1,4 @@
 package com.example.github.flink;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
@@ -23,21 +21,21 @@ public class GithubEventsFlinkJob {
 
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.fromSource(
+                        getStringKafkaSource(),
+                        WatermarkStrategy.<String>forBoundedOutOfOrderness(Duration.ofSeconds(5)),
+                        "github-events-kafka-source"
+                )
+                .map(new ParseGithubEventFunction())
+                .map(new EnrichGithubEventFunction())
+                .map(new SerializeEnrichedEventFunction())
+                .sinkTo(getKafkaSink());
 
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
+        env.execute("GitHub Events Flink Analytics Job");
+    }
 
-        GithubEventMapper mapper = new GithubEventMapper();
-
-        KafkaSource<String> source = KafkaSource.<String>builder()
-                .setBootstrapServers(BOOTSTRAP_SERVERS)
-                .setTopics(INPUT_TOPIC)
-                .setGroupId("github-events-flink-job")
-                .setStartingOffsets(OffsetsInitializer.earliest())
-                .setValueOnlyDeserializer(new SimpleStringSchema())
-                .build();
-
-        KafkaSink<String> sink = KafkaSink.<String>builder()
+    private static KafkaSink<String> getKafkaSink() {
+        return KafkaSink.<String>builder()
                 .setBootstrapServers(BOOTSTRAP_SERVERS)
                 .setRecordSerializer(
                         KafkaRecordSerializationSchema.builder()
@@ -46,17 +44,15 @@ public class GithubEventsFlinkJob {
                                 .build()
                 )
                 .build();
+    }
 
-        env.fromSource(
-                        source,
-                        WatermarkStrategy.<String>forBoundedOutOfOrderness(Duration.ofSeconds(5)),
-                        "github-events-kafka-source"
-                )
-                .map(json -> objectMapper.readValue(json, GithubEvent.class))
-                .map(mapper::enrich)
-                .map(objectMapper::writeValueAsString)
-                .sinkTo(sink);
-
-        env.execute("GitHub Events Flink Analytics Job");
+    private static KafkaSource<String> getStringKafkaSource() {
+        return KafkaSource.<String>builder()
+                .setBootstrapServers(BOOTSTRAP_SERVERS)
+                .setTopics(INPUT_TOPIC)
+                .setGroupId("github-events-flink-job")
+                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setValueOnlyDeserializer(new SimpleStringSchema())
+                .build();
     }
 }
