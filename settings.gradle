@@ -8,3 +8,4 @@ pluginManagement {
 
 rootProject.name = 'github-events-flink-analytics'
 include 'flink-job'
+include 'producer'
