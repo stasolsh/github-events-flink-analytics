@@ -10,13 +10,15 @@ Real-time stream processing application built with Apache Kafka and Apache Flink
 
 ## Overview
 
-This project demonstrates a simple real-time data processing pipeline:
+This project demonstrates a real-time data processing pipeline:
 
 1. A producer generates mock GitHub events.
 2. Events are published to Kafka.
 3. Apache Flink consumes events from Kafka.
-4. Flink enriches events with additional business logic.
+4. Flink enriches events with severity information.
 5. Enriched events are written back to Kafka.
+6. Flink also performs 1-minute window aggregations by event type.
+7. Aggregated counts are written to a separate Kafka topic.
 
 ---
 
@@ -37,13 +39,15 @@ This project demonstrates a simple real-time data processing pipeline:
 +-----------------------+
 | Apache Flink          |
 | Stream Processing     |
-+----------+------------+
-           |
-           v
-+-----------------------+
-| Kafka                 |
-| github.events.enriched|
-+-----------------------+
+| - Event enrichment    |
+| - Window aggregation  |
++-----+-------------+---+
+      |             |
+      v             v
++----------------+  +----------------------+
+| Kafka          |  | Kafka                |
+| enriched topic |  | counts topic         |
++----------------+  +----------------------+
 ```
 
 ---
@@ -76,6 +80,10 @@ github-events-flink-analytics/
 │   ├── ParseGithubEventFunction.java
 │   ├── EnrichGithubEventFunction.java
 │   ├── SerializeEnrichedEventFunction.java
+│   ├── windowaggregations/
+│   │   ├── EventTypeCount.java
+│   │   ├── EventTypeCountAggregateFunction.java
+│   │   └── EventTypeCountWindowFunction.java
 │   └── GithubEventsFlinkJob.java
 │
 ├── docker-compose.yml
@@ -83,6 +91,16 @@ github-events-flink-analytics/
 ├── settings.gradle
 └── README.md
 ```
+
+---
+
+## Kafka Topics
+
+| Topic | Purpose |
+|---|---|
+| `github.events.raw` | Raw mock GitHub events from producer |
+| `github.events.enriched` | Enriched events produced by Flink |
+| `github.events.counts` | 1-minute event type counts produced by Flink |
 
 ---
 
@@ -94,7 +112,7 @@ github-events-flink-analytics/
 github.events.raw
 ```
 
-Example event:
+Example raw event:
 
 ```json
 {
@@ -110,23 +128,27 @@ Example event:
 }
 ```
 
+---
+
+## Event Enrichment
+
 ### Enrichment Rules
 
-| Event Type       | Severity |
-| ---------------- | -------- |
-| PullRequestEvent | HIGH     |
-| IssuesEvent      | HIGH     |
-| PushEvent        | MEDIUM   |
-| WatchEvent       | LOW      |
-| ForkEvent        | LOW      |
+| Event Type | Severity |
+|---|---|
+| PullRequestEvent | HIGH |
+| IssuesEvent | HIGH |
+| PushEvent | MEDIUM |
+| WatchEvent | LOW |
+| ForkEvent | LOW |
 
-### Output Topic
+### Enriched Output Topic
 
 ```text
 github.events.enriched
 ```
 
-Example output:
+Example enriched event:
 
 ```json
 {
@@ -137,6 +159,45 @@ Example output:
   "createdAt": "2026-05-29T10:00:00Z",
   "severity": "MEDIUM",
   "processedAtEpochMs": 1780000000000
+}
+```
+
+---
+
+## Window Aggregation
+
+The Flink job also counts events by event type in 1-minute tumbling processing-time windows.
+
+### Aggregation Logic
+
+```text
+Kafka topic: github.events.raw
+        ↓
+Parse JSON into GithubEvent
+        ↓
+Group by event type
+        ↓
+1-minute tumbling window
+        ↓
+Count events per type
+        ↓
+Kafka topic: github.events.counts
+```
+
+### Counts Output Topic
+
+```text
+github.events.counts
+```
+
+Example count event:
+
+```json
+{
+  "type": "PushEvent",
+  "count": 12,
+  "windowStart": "2026-05-31T10:00:00Z",
+  "windowEnd": "2026-05-31T10:01:00Z"
 }
 ```
 
@@ -162,6 +223,12 @@ Windows:
 ./gradlew :flink-job:shadowJar
 ```
 
+Windows:
+
+```powershell
+.\gradlew.bat :flink-job:shadowJar
+```
+
 Generated JAR:
 
 ```text
@@ -178,10 +245,59 @@ docker compose up -d
 
 ### Available UIs
 
-| Service  | URL                   |
-| -------- | --------------------- |
+| Service | URL |
+|---|---|
 | Kafka UI | http://localhost:8080 |
 | Flink UI | http://localhost:8081 |
+
+---
+
+## Create Kafka Topics
+
+Create the input and output topics manually before starting the Flink job:
+
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --create \
+  --topic github.events.raw \
+  --partitions 1 \
+  --replication-factor 1
+```
+
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --create \
+  --topic github.events.enriched \
+  --partitions 1 \
+  --replication-factor 1
+```
+
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --create \
+  --topic github.events.counts \
+  --partitions 1 \
+  --replication-factor 1
+```
+
+Check topics:
+
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --list
+```
+
+Expected:
+
+```text
+github.events.raw
+github.events.enriched
+github.events.counts
+```
 
 ---
 
@@ -197,6 +313,12 @@ Windows:
 .\gradlew.bat :producer:run
 ```
 
+The producer writes mock GitHub events to:
+
+```text
+github.events.raw
+```
+
 ---
 
 ## Submit Flink Job
@@ -208,7 +330,7 @@ docker cp flink-job/build/libs/github-events-flink-job-1.0.0.jar \
 flink-jobmanager:/tmp/github-events-flink-job-1.0.0.jar
 ```
 
-Run Job:
+Run job:
 
 ```bash
 docker exec -it flink-jobmanager \
@@ -236,3 +358,49 @@ docker exec -it flink-kafka kafka-console-consumer \
   --topic github.events.enriched \
   --from-beginning
 ```
+
+---
+
+## Verify Window Aggregation Results
+
+Wait at least 1 minute after the Flink job starts because results are emitted when the tumbling window closes.
+
+```bash
+docker exec -it flink-kafka kafka-console-consumer \
+  --bootstrap-server kafka:29092 \
+  --topic github.events.counts \
+  --from-beginning
+```
+
+Expected output:
+
+```json
+{
+  "type": "PullRequestEvent",
+  "count": 3,
+  "windowStart": "2026-05-31T10:00:00Z",
+  "windowEnd": "2026-05-31T10:01:00Z"
+}
+```
+
+---
+
+## Troubleshooting
+
+### UnknownTopicOrPartitionException
+
+If Flink fails with:
+
+```text
+UnknownTopicOrPartitionException
+```
+
+create the Kafka topics manually using the commands from the **Create Kafka Topics** section.
+
+### Flink job starts but no count results appear
+
+Wait at least 1 minute. The `github.events.counts` topic receives results only after the tumbling window closes.
+
+### No enriched events appear
+
+Check that the producer is running and sending events to `github.events.raw`.
