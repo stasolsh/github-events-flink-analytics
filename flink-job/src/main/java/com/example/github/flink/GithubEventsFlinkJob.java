@@ -1,4 +1,5 @@
 package com.example.github.flink;
+import com.example.github.flink.eventcounting.SerializeObjectFunction;
 import com.example.github.flink.windowaggregations.EventTypeCountAggregateFunction;
 import com.example.github.flink.windowaggregations.EventTypeCountWindowFunction;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
@@ -11,6 +12,8 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import java.time.Duration;
+import com.example.github.flink.eventcounting.ContributorActivityWindowFunction;
+import com.example.github.flink.eventcounting.RepositoryCountWindowFunction;
 
 public class GithubEventsFlinkJob {
 
@@ -23,14 +26,20 @@ public class GithubEventsFlinkJob {
     private static final String OUTPUT_TOPIC =
             System.getenv().getOrDefault("OUTPUT_TOPIC", "github.events.enriched");
 
-    private static final String COUNTS_TOPIC =
-            System.getenv().getOrDefault("COUNTS_TOPIC", "github.events.counts");
+    private static final String EVENT_TYPE_COUNTS_TOPIC =
+            System.getenv().getOrDefault("EVENT_TYPE_COUNTS_TOPIC", "github.events.counts");
+
+    private static final String REPO_COUNTS_TOPIC =
+            System.getenv().getOrDefault("REPO_COUNTS_TOPIC", "github.events.repo.counts");
+
+    private static final String TOP_CONTRIBUTORS_TOPIC =
+            System.getenv().getOrDefault("TOP_CONTRIBUTORS_TOPIC", "github.events.top.contributors");
 
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         DataStream<GithubEvent> events = env.fromSource(
                         getStringKafkaSource(),
-                        WatermarkStrategy.<String>forBoundedOutOfOrderness(Duration.ofSeconds(5)),
+                        WatermarkStrategy.forBoundedOutOfOrderness(Duration.ofSeconds(5)),
                         "github-events-kafka-source"
                 )
                 .map(new ParseGithubEventFunction());
@@ -46,7 +55,29 @@ public class GithubEventsFlinkJob {
                 .aggregate(
                         new EventTypeCountAggregateFunction(),
                         new EventTypeCountWindowFunction()
-                );
+                )
+                .map(new SerializeObjectFunction<>())
+                .sinkTo(getKafkaSink(EVENT_TYPE_COUNTS_TOPIC));
+
+        events
+                .keyBy(GithubEvent::getRepo)
+                .window(TumblingProcessingTimeWindows.of(Duration.ofMinutes(1)))
+                .aggregate(
+                        new EventTypeCountAggregateFunction(),
+                        new RepositoryCountWindowFunction()
+                )
+                .map(new SerializeObjectFunction<>())
+                .sinkTo(getKafkaSink(REPO_COUNTS_TOPIC));
+
+        events
+                .keyBy(GithubEvent::getActor)
+                .window(TumblingProcessingTimeWindows.of(Duration.ofMinutes(1)))
+                .aggregate(
+                        new EventTypeCountAggregateFunction(),
+                        new ContributorActivityWindowFunction()
+                )
+                .map(new SerializeObjectFunction<>())
+                .sinkTo(getKafkaSink(TOP_CONTRIBUTORS_TOPIC));
 
         env.execute("GitHub Events Flink Analytics Job");
     }
