@@ -96,12 +96,98 @@ github-events-flink-analytics/
 
 ## Kafka Topics
 
-| Topic | Purpose |
-|---|---|
-| `github.events.raw` | Raw mock GitHub events from producer |
-| `github.events.enriched` | Enriched events produced by Flink |
-| `github.events.counts` | 1-minute event type counts produced by Flink |
+| Topic                          | Purpose                       |
+| ------------------------------ | ----------------------------- |
+| github.events.raw              | Raw GitHub events             |
+| github.events.enriched         | Enriched events with severity |
+| github.events.counts           | Event counts by event type    |
+| github.events.repo.counts      | Event counts by repository    |
+| github.events.top.contributors | Contributor activity counts   |
 
+---
+
+## Analytics Pipelines
+
+The Flink job performs three independent analytics streams.
+
+### 1. Event Type Counting
+
+Counts GitHub events by type every minute.
+
+```text
+github.events.raw
+        ↓
+GROUP BY eventType
+        ↓
+1-minute tumbling window
+        ↓
+github.events.counts
+```
+
+Example:
+
+```json
+{
+  "type": "PushEvent",
+  "count": 15,
+  "windowStart": "2026-06-12T10:00:00Z",
+  "windowEnd": "2026-06-12T10:01:00Z"
+}
+```
+
+---
+
+### 2. Repository Analytics
+
+Counts events per repository every minute.
+
+```text
+github.events.raw
+        ↓
+GROUP BY repository
+        ↓
+1-minute tumbling window
+        ↓
+github.events.repo.counts
+```
+
+Example:
+
+```json
+{
+  "repo": "apache/flink",
+  "count": 23,
+  "windowStart": "2026-06-12T10:00:00Z",
+  "windowEnd": "2026-06-12T10:01:00Z"
+}
+```
+
+---
+
+### 3. Top Contributors Analytics
+
+Counts events per contributor every minute.
+
+```text
+github.events.raw
+        ↓
+GROUP BY actor
+        ↓
+1-minute tumbling window
+        ↓
+github.events.top.contributors
+```
+
+Example:
+
+```json
+{
+  "actor": "alice",
+  "count": 17,
+  "windowStart": "2026-06-12T10:00:00Z",
+  "windowEnd": "2026-06-12T10:01:00Z"
+}
+```
 ---
 
 ## Event Flow
@@ -283,6 +369,24 @@ docker exec -it flink-kafka kafka-topics \
   --replication-factor 1
 ```
 
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --create \
+  --topic github.events.repo.counts \
+  --partitions 1 \
+  --replication-factor 1
+```
+
+```bash
+docker exec -it flink-kafka kafka-topics \
+  --bootstrap-server kafka:29092 \
+  --create \
+  --topic github.events.top.contributors \
+  --partitions 1 \
+  --replication-factor 1
+```
+
 Check topics:
 
 ```bash
@@ -381,6 +485,25 @@ Expected output:
   "windowStart": "2026-05-31T10:00:00Z",
   "windowEnd": "2026-05-31T10:01:00Z"
 }
+```
+## Verify Repository Analytics
+
+```bash
+docker exec -it flink-kafka kafka-console-consumer \
+  --bootstrap-server kafka:29092 \
+  --topic github.events.repo.counts \
+  --from-beginning
+```
+
+---
+
+## Verify Top Contributors Analytics
+
+```bash
+docker exec -it flink-kafka kafka-console-consumer \
+  --bootstrap-server kafka:29092 \
+  --topic github.events.top.contributors \
+  --from-beginning
 ```
 
 ---
